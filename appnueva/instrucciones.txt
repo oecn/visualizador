@@ -1,0 +1,2 @@
+Primera vez (para instalar dependencias): abre PowerShell y ejecuta appnueva\instalar_appnueva.ps1 (usa -ExecutionPolicy Bypass si tu política lo pide). Esto crea el venv, instala Python si falta e instala librerías.
+Después de instalar: ya puedes lanzar con doble click en el acceso directo “Ventas App” que crea el script, o doble click en appnueva\lanzar_appnueva.bat. El .ps1 también funciona, pero el .bat evita bloqueos de ejecución.

@@ -1,0 +1,26 @@
+﻿Instalacion necesaria para ventas_app (Windows / PowerShell)
+
+Requisito base
+- Python 3.10+ (recomendado 3.13 por los .pyc en el repo)
+
+Librerias externas (pip)
+- PySide6: interfaz grafica (Qt)
+- pandas: lectura y limpieza de Excel
+- matplotlib: graficas en la UI
+- openpyxl: motor de lectura Excel para pandas
+
+Imports externos detectados en el codigo
+- PySide6 (QtCore, QtGui, QtWidgets)
+- pandas as pd
+- matplotlib (Figure, FigureCanvasQTAgg, FuncFormatter)
+
+Lista en formato pip install (lo que debes instalar)
+pip install PySide6
+pip install pandas
+pip install matplotlib
+pip install openpyxl
+
+Modulos de la libreria estandar (no requieren instalacion)
+- csv, sqlite3, argparse, sys, pathlib, datetime, dataclasses, typing, tkinter
+
+Nota: tkinter viene con Python en Windows.
