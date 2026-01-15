@@ -186,6 +186,32 @@ class SalesRepository:
         query += f" WHERE {' AND '.join(where)} ORDER BY sort_date DESC"
         return list(self._conn.execute(query, params))
 
+    def fetch_provider_monthly_totals(
+        self,
+        provider: str | None = None,
+        year: int | None = None,
+    ) -> list[sqlite3.Row]:
+        where = ["COALESCE(sp.start_date, sp.end_date) IS NOT NULL"]
+        params: list[object] = []
+        if provider:
+            where.append("sp.provider = ?")
+            params.append(provider)
+        if year:
+            where.append("strftime('%Y', date(COALESCE(sp.start_date, sp.end_date))) = ?")
+            params.append(str(year))
+        query = f"""
+        SELECT
+            strftime('%Y-%m', date(COALESCE(sp.start_date, sp.end_date))) AS month_key,
+            SUM(sr.quantity) AS total_quantity,
+            SUM(sr.amount) AS total_amount
+        FROM sales_records sr
+        JOIN sales_periods sp ON sp.id = sr.period_id
+        WHERE {' AND '.join(where)}
+        GROUP BY month_key
+        ORDER BY month_key ASC
+        """
+        return list(self._conn.execute(query, params))
+
     def list_years(self) -> list[int]:
         query = """
         SELECT DISTINCT CAST(strftime('%Y', date(COALESCE(start_date, end_date))) AS INTEGER) AS year
@@ -194,6 +220,23 @@ class SalesRepository:
         ORDER BY year DESC
         """
         return [int(row["year"]) for row in self._conn.execute(query)]
+
+    def fetch_provider_yearly_totals(self, year: int) -> list[sqlite3.Row]:
+        query = """
+        SELECT
+            CASE
+                WHEN sp.provider IS NULL OR TRIM(sp.provider) = '' THEN 'Sin proveedor'
+                ELSE sp.provider
+            END AS provider,
+            SUM(sr.quantity) AS total_quantity,
+            SUM(sr.amount) AS total_amount
+        FROM sales_records sr
+        JOIN sales_periods sp ON sp.id = sr.period_id
+        WHERE strftime('%Y', date(COALESCE(sp.start_date, sp.end_date))) = ?
+        GROUP BY provider
+        ORDER BY total_amount DESC
+        """
+        return list(self._conn.execute(query, (str(year),)))
 
     def fetch_yearly_branch_totals(self, year: int) -> list[sqlite3.Row]:
         query = """

@@ -43,6 +43,8 @@ from matplotlib.ticker import FuncFormatter
 from ..database import SalesRepository
 from ..excel_importer import ExcelImporter
 from .comparar_ayaa import CompararAyAADialog
+from .provider_yearly_summary import ProviderYearlySummaryTab
+from .provider_monthly_trend import ProviderMonthlyTrendTab
 
 
 TREND_COLORS = {
@@ -111,6 +113,8 @@ class MainWindow(QMainWindow):
         self.growth_summary_label = QLabel("Selecciona un proveedor para ver el crecimiento anual.")
         self.growth_status_badge = QLabel("")
         self._product_search_map: dict[str, tuple[str, str]] = {}
+        self.provider_yearly_tab = ProviderYearlySummaryTab(self.repository)
+        self.provider_monthly_tab = ProviderMonthlyTrendTab(self.repository)
 
         self._build_ui()
         self._connect_signals()
@@ -317,6 +321,8 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(monthly_tab, "Venta mensual")
         self.tabs.addTab(yoy_tab, "Comparativo anual")
         self.tabs.addTab(growth_tab, "Crecimiento anual")
+        self.tabs.addTab(self.provider_yearly_tab, "Resumen anual")
+        self.tabs.addTab(self.provider_monthly_tab, "Evolucion mensual")
 
         body_layout.addWidget(self.tabs, 3)
         main_layout.addLayout(body_layout, 1)
@@ -376,6 +382,8 @@ class MainWindow(QMainWindow):
         self.refresh_months()
         self.refresh_yoy_tab()
         self.refresh_growth_tab()
+        self.provider_yearly_tab.refresh()
+        self.provider_monthly_tab.refresh()
         self._refresh_product_completer()
         self._refresh_yoy_product_search()
 
@@ -1416,6 +1424,8 @@ class MainWindow(QMainWindow):
             self.yoy_branch_table,
             self.yoy_gainers_table,
             self.yoy_losers_table,
+            self.provider_yearly_tab.table,
+            self.provider_monthly_tab.table,
         ):
             update_palette(widget)
 
