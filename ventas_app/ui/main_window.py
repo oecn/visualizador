@@ -90,6 +90,7 @@ class MainWindow(QMainWindow):
         self.provider_filter = QComboBox()
         self.product_filter_combo = QComboBox()
         self.product_filter = QLineEdit()
+        self.month_metric_combo = QComboBox()
         self.product_type_filter = QComboBox()
         self.product_completer = QCompleter()
         self.start_date_filter = QDateEditWithReset()
@@ -184,6 +185,10 @@ class MainWindow(QMainWindow):
         month_filter_layout.addWidget(self.month_filter, 1)
         month_filter_layout.addWidget(QLabel("Proveedor:"))
         month_filter_layout.addWidget(self.provider_filter, 1)
+        month_filter_layout.addWidget(QLabel("Metrica:"))
+        self.month_metric_combo.addItem("UNIDADES", "qty")
+        self.month_metric_combo.addItem("MONTO (GS.)", "amount")
+        month_filter_layout.addWidget(self.month_metric_combo)
         monthly_layout.addLayout(month_filter_layout)
 
         product_filter_layout = QHBoxLayout()
@@ -362,6 +367,7 @@ class MainWindow(QMainWindow):
         self.branch_filter.currentIndexChanged.connect(lambda *_: self.load_records())
         self.month_filter.currentIndexChanged.connect(lambda *_: self.load_monthly_summary())
         self.provider_filter.currentIndexChanged.connect(lambda *_: self.refresh_months())
+        self.month_metric_combo.currentIndexChanged.connect(lambda *_: self.load_monthly_summary())
         self.product_filter_combo.currentIndexChanged.connect(lambda *_: self.load_monthly_summary())
         self.product_filter.textChanged.connect(lambda *_: self.load_monthly_summary())
         self.product_type_filter.currentIndexChanged.connect(lambda *_: self.load_monthly_summary())
@@ -619,6 +625,9 @@ class MainWindow(QMainWindow):
     def load_monthly_summary(self) -> None:
         provider = self.provider_filter.currentData()
         month_key = self.month_filter.currentData()
+        metric = self.month_metric_combo.currentData() or "qty"
+        is_currency = metric == "amount"
+        self._update_monthly_headers(metric)
         months = self.repository.list_months(provider=provider)
         if month_key:
             months = [row for row in months if row["month_key"] == month_key]
@@ -642,10 +651,12 @@ class MainWindow(QMainWindow):
                 code = row["product_code"] or ""
                 desc = row["description"] or ""
                 qty = float(row["total_quantity"] or 0.0)
+                amt = float(row["total_amount"] or 0.0)
+                value = amt if is_currency else qty
                 key = (code, desc)
                 if key not in product_map:
                     product_map[key] = {b: 0.0 for b in self.MONTHLY_BRANCHES}
-                product_map[key][branch] = qty
+                product_map[key][branch] = value
             month_infos.append(
                 {
                     "month_row": month_row,
@@ -691,6 +702,7 @@ class MainWindow(QMainWindow):
                     month_totals[branch],
                     prev_value,
                     is_total=True,
+                    is_currency=is_currency,
                 )
                 month_item.setText(idx_col, text)
                 if color:
@@ -699,6 +711,7 @@ class MainWindow(QMainWindow):
                 month_total_sum,
                 prev_total_sum,
                 is_total=True,
+                is_currency=is_currency,
             )
             month_item.setText(len(self.MONTHLY_BRANCHES) + 1, total_text)
             if total_color:
@@ -727,11 +740,16 @@ class MainWindow(QMainWindow):
                     value = values.get(branch, 0.0)
                     total += value
                     prev_value = prev_values.get(branch, 0.0) if isinstance(prev_values, dict) else 0.0
-                    text, color = self._format_branch_trend_text(value, prev_value)
+                    text, color = self._format_branch_trend_text(
+                        value,
+                        prev_value,
+                        is_currency=is_currency,
+                    )
                     child.setText(idx_col, text)
                     if color:
                         child.setForeground(idx_col, QBrush(color))
-                child.setText(len(self.MONTHLY_BRANCHES) + 1, self._format_number(total))
+                total_text = self._format_currency(total) if is_currency else self._format_number(total)
+                child.setText(len(self.MONTHLY_BRANCHES) + 1, total_text)
             total_products += len(filtered_map)
             month_item.setExpanded(True)
         self.month_summary_label.setText(
@@ -1408,7 +1426,7 @@ class MainWindow(QMainWindow):
         return f"{month_name} · {period}"
 
     def _format_branch_trend_text(
-        self, current: float, previous: float, *, is_total: bool = False
+        self, current: float, previous: float, *, is_total: bool = False, is_currency: bool = False
     ) -> tuple[str, Optional[QColor]]:
         diff = current - previous
         if abs(diff) <= 1e-6:
@@ -1426,9 +1444,19 @@ class MainWindow(QMainWindow):
         pct_text = f"{pct:+.1f}%".replace(".", ",")
         symbol = TREND_SYMBOLS[trend]
         prefix = "\u2211 " if is_total else ""
-        value_text = self._format_number(current)
+        value_text = self._format_currency(current) if is_currency else self._format_number(current)
         formatted = f"{prefix}{symbol} {value_text} ({pct_text})"
         return formatted, TREND_COLORS.get(trend)
+
+    def _update_monthly_headers(self, metric: str) -> None:
+        base_headers = ["Mes / Producto"] + self.MONTHLY_BRANCHES
+        if metric == "amount":
+            total_label = "Total monto (Gs.)"
+        else:
+            total_label = "Total unidades"
+        headers = base_headers + [total_label]
+        if self.monthly_tree.columnCount() == len(headers):
+            self.monthly_tree.setHeaderLabels(headers)
 
     def _open_product_chart(self, item: QTreeWidgetItem, _column: int) -> None:
         data = item.data(0, Qt.UserRole)

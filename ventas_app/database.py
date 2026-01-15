@@ -550,7 +550,8 @@ class SalesRepository:
             sr.product_code,
             sr.description,
             sr.branch,
-            SUM(sr.quantity) AS total_quantity
+            SUM(sr.quantity) AS total_quantity,
+            SUM(sr.amount) AS total_amount
         FROM sales_records sr
         JOIN sales_periods sp ON sp.id = sr.period_id
         WHERE {' AND '.join(where)}
