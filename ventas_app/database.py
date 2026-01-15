@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from contextlib import contextmanager
 from datetime import date
@@ -31,7 +32,8 @@ class SalesRepository:
             plan_name TEXT,
             start_date TEXT,
             end_date TEXT,
-            source_file TEXT NOT NULL UNIQUE
+            source_file TEXT NOT NULL UNIQUE,
+            created_by TEXT
         );
 
         CREATE TABLE IF NOT EXISTS sales_records (
@@ -48,8 +50,101 @@ class SalesRepository:
 
         CREATE INDEX IF NOT EXISTS idx_sales_records_period ON sales_records(period_id);
         CREATE INDEX IF NOT EXISTS idx_sales_records_branch ON sales_records(branch);
+
+        CREATE TABLE IF NOT EXISTS period_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            period_id INTEGER,
+            action TEXT NOT NULL,
+            username TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            source_file TEXT,
+            provider TEXT,
+            start_date TEXT,
+            end_date TEXT,
+            created_by TEXT,
+            FOREIGN KEY(period_id) REFERENCES sales_periods(id) ON DELETE SET NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            is_admin INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
         """
         self._conn.executescript(schema)
+        self._ensure_schema_columns()
+        self._ensure_default_admin()
+
+    def _ensure_schema_columns(self) -> None:
+        columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(sales_periods)")}
+        if "created_by" not in columns:
+            self._conn.execute("ALTER TABLE sales_periods ADD COLUMN created_by TEXT")
+        audit_columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(period_audit)")}
+        if "created_by" not in audit_columns:
+            self._conn.execute("ALTER TABLE period_audit ADD COLUMN created_by TEXT")
+
+    def _ensure_default_admin(self) -> None:
+        row = self._conn.execute("SELECT COUNT(*) AS total FROM users").fetchone()
+        if row and int(row["total"]) > 0:
+            return
+        self.create_user("admin", "admin", is_admin=True)
+
+    def _normalize_username(self, username: str) -> str:
+        return username.strip().lower()
+
+    def _hash_password(self, password: str) -> str:
+        return hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+    def create_user(self, username: str, password: str, *, is_admin: bool = False) -> bool:
+        clean_name = self._normalize_username(username)
+        if not clean_name:
+            return False
+        pwd_hash = self._hash_password(password)
+        try:
+            with self.transaction():
+                self._conn.execute(
+                    "INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, ?)",
+                    (clean_name, pwd_hash, 1 if is_admin else 0),
+                )
+        except sqlite3.IntegrityError:
+            return False
+        return True
+
+    def verify_user(self, username: str, password: str) -> Optional[sqlite3.Row]:
+        clean_name = self._normalize_username(username)
+        if not clean_name:
+            return None
+        row = self._conn.execute(
+            "SELECT id, username, password_hash, is_admin FROM users WHERE username = ?",
+            (clean_name,),
+        ).fetchone()
+        if not row:
+            return None
+        if row["password_hash"] != self._hash_password(password):
+            return None
+        return row
+
+    def change_password(self, username: str, old_password: str, new_password: str) -> bool:
+        clean_name = self._normalize_username(username)
+        if not clean_name:
+            return False
+        row = self._conn.execute(
+            "SELECT password_hash FROM users WHERE username = ?",
+            (clean_name,),
+        ).fetchone()
+        if not row:
+            return False
+        if row["password_hash"] != self._hash_password(old_password):
+            return False
+        new_hash = self._hash_password(new_password)
+        with self.transaction():
+            self._conn.execute(
+                "UPDATE users SET password_hash = ? WHERE username = ?",
+                (new_hash, clean_name),
+            )
+        return True
 
     def close(self) -> None:
         self._conn.close()
@@ -63,23 +158,25 @@ class SalesRepository:
             self._conn.rollback()
             raise
 
-    def store_batch(self, batch: SalesBatch) -> int:
+    def store_batch(self, batch: SalesBatch, *, created_by: str | None = None) -> int:
         """Inserta o actualiza un lote completo y devuelve las filas afectadas."""
         if not batch.records:
             return 0
         start = self._date_to_text(batch.period_start)
         end = self._date_to_text(batch.period_end)
+        created_by = self._normalize_username(created_by or "") or None
         with self.transaction():
             self._conn.execute(
                 """
-                INSERT INTO sales_periods (provider, brand, plan_name, start_date, end_date, source_file)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO sales_periods (provider, brand, plan_name, start_date, end_date, source_file, created_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(source_file) DO UPDATE SET
                     provider=excluded.provider,
                     brand=excluded.brand,
                     plan_name=excluded.plan_name,
                     start_date=excluded.start_date,
-                    end_date=excluded.end_date
+                    end_date=excluded.end_date,
+                    created_by=excluded.created_by
                 """,
                 (
                     batch.provider,
@@ -88,6 +185,7 @@ class SalesRepository:
                     start,
                     end,
                     batch.source_file.name,
+                    created_by,
                 ),
             )
             period_id = self._get_period_id(batch.source_file.name)
@@ -112,6 +210,8 @@ class SalesRepository:
                 """,
                 payload,
             )
+            if created_by:
+                self._log_period_action(period_id, "IMPORT", created_by)
             return len(payload)
 
     def list_periods(self) -> list[sqlite3.Row]:
@@ -122,11 +222,95 @@ class SalesRepository:
         """
         return list(self._conn.execute(query))
 
-    def delete_period(self, period_id: int) -> None:
+    def delete_period(self, period_id: int, *, deleted_by: str | None = None) -> None:
         """Elimina un periodo y sus registros asociados."""
+        deleted_by = self._normalize_username(deleted_by or "") or None
+        if deleted_by:
+            self._log_period_action(period_id, "DELETE", deleted_by)
         with self.transaction():
             self._conn.execute("DELETE FROM sales_records WHERE period_id = ?", (period_id,))
             self._conn.execute("DELETE FROM sales_periods WHERE id = ?", (period_id,))
+
+    def fetch_period(self, period_id: int) -> Optional[sqlite3.Row]:
+        row = self._conn.execute(
+            """
+            SELECT id, provider, start_date, end_date, source_file, created_by
+            FROM sales_periods
+            WHERE id = ?
+            """,
+            (period_id,),
+        ).fetchone()
+        return row
+
+    def _log_period_action(self, period_id: int, action: str, username: str) -> None:
+        info = self.fetch_period(period_id)
+        if not info:
+            return
+        self._conn.execute(
+            """
+            INSERT INTO period_audit (
+                period_id,
+                action,
+                username,
+                source_file,
+                provider,
+                start_date,
+                end_date,
+                created_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                period_id,
+                action,
+                username,
+                info["source_file"],
+                info["provider"],
+                info["start_date"],
+                info["end_date"],
+                info["created_by"],
+            ),
+        )
+
+    def fetch_period_audit(
+        self,
+        limit: int = 200,
+        *,
+        username: str | None = None,
+        action: str | None = None,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> list[sqlite3.Row]:
+        where: list[str] = []
+        params: list[object] = []
+        if username:
+            where.append("LOWER(username) LIKE ?")
+            params.append(f"%{username.lower()}%")
+        if action:
+            where.append("action = ?")
+            params.append(action)
+        if start_date:
+            where.append("date(created_at) >= ?")
+            params.append(start_date.isoformat())
+        if end_date:
+            where.append("date(created_at) <= ?")
+            params.append(end_date.isoformat())
+        where_clause = f"WHERE {' AND '.join(where)}" if where else ""
+        query = """
+        SELECT
+            created_at,
+            action,
+            username,
+            created_by,
+            source_file,
+            provider,
+            start_date,
+            end_date
+        FROM period_audit
+        {where_clause}
+        ORDER BY datetime(created_at) DESC, id DESC
+        LIMIT ?
+        """
+        return list(self._conn.execute(query.format(where_clause=where_clause), (*params, int(limit))))
     def clear_all(self) -> None:
         """Elimina todas las importaciones almacenadas."""
         with self.transaction():

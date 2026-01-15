@@ -6,10 +6,11 @@ import argparse
 import sys
 from pathlib import Path
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QDialog
 
 from .database import SalesRepository
 from .excel_importer import ExcelImporter
+from .ui.login_dialog import LoginDialog
 from .ui.main_window import MainWindow
 
 
@@ -40,8 +41,11 @@ def main(argv: list[str] | None = None) -> int:
     repository = SalesRepository(args.db)
     importer = ExcelImporter()
     app = QApplication.instance() or QApplication(sys.argv)
-    window = MainWindow(repository, importer, default_folder=args.folder)
-    window.show()
+    login = LoginDialog(None, repository)
+    if login.exec() != QDialog.Accepted:
+        return 0
+    window = MainWindow(repository, importer, default_folder=args.folder, current_user=login.user_row)
+    window.showMaximized()
     return app.exec()
 
 

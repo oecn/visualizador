@@ -45,6 +45,7 @@ from ..excel_importer import ExcelImporter
 from .comparar_ayaa import CompararAyAADialog
 from .provider_yearly_summary import ProviderYearlySummaryTab
 from .provider_monthly_trend import ProviderMonthlyTrendTab
+from .user_panel import UserPanel
 
 
 TREND_COLORS = {
@@ -70,11 +71,13 @@ class MainWindow(QMainWindow):
         repository: SalesRepository,
         importer: ExcelImporter,
         default_folder: Optional[Path] = None,
+        current_user: Optional[sqlite3.Row] = None,
     ) -> None:
         super().__init__()
         self.repository = repository
         self.importer = importer
         self.default_folder = default_folder or Path.cwd()
+        self.current_user = current_user
         self.setWindowTitle("Seguimiento de ventas por sucursal")
         self.resize(1200, 700)
 
@@ -115,6 +118,9 @@ class MainWindow(QMainWindow):
         self._product_search_map: dict[str, tuple[str, str]] = {}
         self.provider_yearly_tab = ProviderYearlySummaryTab(self.repository)
         self.provider_monthly_tab = ProviderMonthlyTrendTab(self.repository)
+        username = (current_user["username"] if current_user else "usuario") if current_user else "usuario"
+        is_admin = bool(current_user["is_admin"]) if current_user else False
+        self.user_panel = UserPanel(self.repository, username, is_admin)
 
         self._build_ui()
         self._connect_signals()
@@ -134,6 +140,8 @@ class MainWindow(QMainWindow):
         refresh_btn = QPushButton("Refrescar")
         delete_period_btn = QPushButton("Eliminar Excel seleccionado")
         clear_btn = QPushButton("Borrar importaciones")
+        if not (self.current_user and bool(self.current_user["is_admin"])):
+            clear_btn.setVisible(False)
 
         toolbar.addWidget(import_btn)
         toolbar.addWidget(import_folder_btn)
@@ -323,6 +331,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(growth_tab, "Crecimiento anual")
         self.tabs.addTab(self.provider_yearly_tab, "Resumen anual")
         self.tabs.addTab(self.provider_monthly_tab, "Evolucion mensual")
+        self.tabs.addTab(self.user_panel, "Usuarios")
 
         body_layout.addWidget(self.tabs, 3)
         main_layout.addLayout(body_layout, 1)
@@ -382,6 +391,7 @@ class MainWindow(QMainWindow):
         self.refresh_months()
         self.refresh_yoy_tab()
         self.refresh_growth_tab()
+        self.user_panel.refresh_audit()
         self.provider_yearly_tab.refresh()
         self.provider_monthly_tab.refresh()
         self._refresh_product_completer()
@@ -425,6 +435,26 @@ class MainWindow(QMainWindow):
             return None
         period_id = item.data(Qt.UserRole)
         return int(period_id) if period_id is not None else None
+
+    def _current_username(self) -> str:
+        if self.current_user and self.current_user["username"]:
+            return str(self.current_user["username"])
+        return "desconocido"
+
+    def _is_admin(self) -> bool:
+        return bool(self.current_user and self.current_user["is_admin"])
+
+    def _can_delete_period(self, period_id: int) -> bool:
+        if self._is_admin():
+            return True
+        period = self.repository.fetch_period(period_id)
+        if not period:
+            return False
+        start = self._parse_date(period["start_date"]) or self._parse_date(period["end_date"])
+        if not start:
+            return False
+        today = date.today()
+        return start.year == today.year and start.month == today.month
 
     def load_records(self) -> None:
         period_id = self._selected_period_id()
@@ -526,6 +556,13 @@ class MainWindow(QMainWindow):
         if period_id is None:
             QMessageBox.information(self, "Sin seleccion", "Elige un Excel importado para poder eliminarlo.")
             return
+        if not self._can_delete_period(period_id):
+            QMessageBox.warning(
+                self,
+                "Acceso restringido",
+                "Solo el administrador puede eliminar periodos fuera del mes actual.",
+            )
+            return
         current_item = self.period_list.currentItem()
         label = current_item.text() if current_item else "periodo seleccionado"
         reply = QMessageBox.question(
@@ -538,7 +575,7 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.Yes:
             return
         try:
-            self.repository.delete_period(period_id)
+            self.repository.delete_period(period_id, deleted_by=self._current_username())
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "No se pudo eliminar", str(exc))
             return
@@ -551,7 +588,7 @@ class MainWindow(QMainWindow):
         for path in paths:
             try:
                 batch = self.importer.load(path)
-                inserted = self.repository.store_batch(batch)
+                inserted = self.repository.store_batch(batch, created_by=self._current_username())
                 successes.append(f"{path.name}: {inserted} filas")
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"{path.name}: {exc}")
